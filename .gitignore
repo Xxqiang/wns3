@@ -1,0 +1,4 @@
+#.gitignore
+*.xml
+/Debug
+/ns-3.27/build/
