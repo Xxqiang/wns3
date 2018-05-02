@@ -354,8 +354,8 @@ CdqHeader::Deserialize (Buffer::Iterator start)
 // the transmission range of a device should be decided carefully,
 // since it will affect the packet delivery ratio
 // we suggest users use wave-transmission-range.cc to get this value
-#define Device_Transmission_Range 100
-#define Max_timeslot 40  //the max number time slot
+#define Device_Transmission_Range 50
+#define Max_timeslot 10  //the max number time slot
 #define Car_number 20  //the mumber of cars
 
 //PacketType
@@ -363,6 +363,8 @@ CdqHeader::Deserialize (Buffer::Iterator start)
 #define CdqPacket 1
 #define AmPacket 2
 #define SchPacket 3
+
+
 
 
 //the of sumilator start
@@ -405,9 +407,10 @@ private:
   void SendCdqPackets(uint32_t channelNumber);
   void SendAmPackets(Ptr<WaveNetDevice> sender, uint32_t channelNumber,bool falg);
   void SendSchPackets(bool flag);
+  void SendSch(Time time);
 
   void SendCdq(Ptr<WaveNetDevice> sender);
-  void SendRm(Ptr<WaveNetDevice> sender,uint32_t channelNumber);
+  void SendRm(Ptr<WaveNetDevice> sender,uint32_t channelNumber,bool flag);
   void Send (Ptr<WaveNetDevice> sender, uint32_t channelNumber);
   bool Receive (Ptr<NetDevice> dev, Ptr<const Packet> pkt, uint16_t mode, const Address &sender);
 
@@ -419,7 +422,10 @@ private:
   void InitStats (void);
   void Destroy (void);
   void Stats (uint32_t randomNumber);
-  void StatQueuedPackets (void);
+  void StartSch();
+  void StopSch();
+
+  //void StatQueuedPackets (void);
  // uint32_t GetQueuedSize (Ptr<WaveEdcaTxopN> edca);
   uint32_t GetChannel();
 
@@ -437,11 +443,9 @@ private:
 
   double time_start=0.0;
 
-  bool broadcast;
-
   uint32_t Channel[6] = {SCH1,SCH2,SCH3,SCH4,SCH5,SCH6};
   uint32_t channel_current=0;
-
+  uint32_t start_chanel[Car_number];
 
   Ptr<UniformRandomVariable> rng;
 
@@ -458,12 +462,15 @@ private:
   std::map<uint32_t, std::vector<struct Cdq> *> CDQ;
   std::map<uint32_t, std::vector<struct Cdq> *> CDQ1;
   std::map<uint32_t, std::vector<uint32_t> *> CLUSTER;
-  uint32_t channel_table[Car_number]={0};
-  Address nodes_cluster[Car_number];
+  uint32_t channel_table[Car_number]={172};
+  Address nodes_cluster_address[Car_number];
+  uint32_t nodes_cluster[Car_number];
   bool isCluster[Car_number];
   bool isSuccefulCluster[Car_number];
   double distant_from_cluster[Car_number]={0.0};
   double risk_factor[Car_number]={0.0};
+  uint32_t startsch_chanel[Car_number]={172};
+
 /*
   class SendStat
   {
@@ -479,7 +486,6 @@ private:
   uint32_t unsuccess_cluster;
   uint32_t sends;
   uint32_t receives;
-  uint32_t queues;
   uint64_t delaySum;        // us
   uint64_t receiveSum;
 
@@ -490,17 +496,12 @@ private:
 MultipleChannelsExperiment::MultipleChannelsExperiment (void)
   : nodesNum (Car_number),           // 20 vehicles in 1km * 4-line
     freq (10),               // 10Hz, 100ms send one non-safety packet
-    simulationTime (3),     // make it run 100s
+    simulationTime (10),     // make it run 100s
     size (1500),             // packet size
 	rm_size(200),
 	//cdq_size(1500),
 	//am_size(200),
-    broadcast (true),
     sequence (0),
-    receives (0),
-    queues (0),
-    delaySum (0),
-    receiveSum (0),
     run (1),
     pdr (0),
     delay (0),
@@ -517,7 +518,6 @@ MultipleChannelsExperiment::Configure (int argc, char **argv)
   cmd.AddValue ("time", "Simulation time, s.", simulationTime);
   cmd.AddValue ("size", "Size of safety packet, bytes.", size);
   cmd.AddValue ("frequency", "Frequency of sending safety packets, Hz.", freq);
-  cmd.AddValue ("broadcast", "transmission mechanism:broadcast (true) or unicast (false), boolean).", broadcast);
   cmd.AddValue ("run", "to make the result more credible, make simulation run many times with different random number).", run);
 
   cmd.Parse (argc, argv);
@@ -695,19 +695,16 @@ MultipleChannelsExperiment::CdqPacketEvent(Ptr<NetDevice> dev, Ptr<const Packet>
 			*vector = header.getCdqVector();
 			CDQ1.insert(std::make_pair(src_id,vector));
 			channel_table[src_id]=header.getChannel();
-			nodes_cluster[src_id]=sender;
+			nodes_cluster_address[src_id]=sender;
+			nodes_cluster[src_id]=tag.getNodeId();
 			isSuccefulCluster[src_id]=true;
 			distant_from_cluster[src_id]=CalculateDistance(pos_d, src_position);
 		}else{
 			if(CalculateDistance (pos_d, src_position)<distant_from_cluster[src_id]){
 				*(j->second)=header.getCdqVector();
-			//j->second->shrink_to_fit();
-			//delete j->second;
-			//j->second = 0;
-			//CDQ1.erase(j);
-			//CDQ1.insert(std::make_pair(src_id,vector));
 				channel_table[src_id]=header.getChannel();
-				nodes_cluster[src_id]=sender;
+				nodes_cluster_address[src_id]=sender;
+				nodes_cluster[src_id]=tag.getNodeId();
 				isSuccefulCluster[src_id]=true;
 				distant_from_cluster[src_id]=CalculateDistance(pos_d, src_position);
 			}
@@ -744,6 +741,22 @@ MultipleChannelsExperiment::SchPacketEvent(Ptr<NetDevice> dev, Ptr<const Packet>
 	if (!result){
 		NS_FATAL_ERROR ("the packet here shall have a stats tag");
 	}
+	delaySum += (Now() - tag.GetSendTime()).GetMicroSeconds ();
+	receiveSum++;
+	std::map<uint32_t, std::vector<uint32_t>*>::iterator i;
+	i=broadcastPackets.find(tag.getNodeId());
+	if(i!=broadcastPackets.end()){
+		std::vector<uint32_t>::iterator it;
+		for(it=i->second->begin();it!=i->second->end();)
+		{
+			if(*it==dev->GetNode()->GetId())
+				it=i->second->erase(it);
+			else it++;
+		}
+		if(i->second->size()==1 && (i->second->at(0)==tag.getNodeId()))
+			receives++;
+	}
+
 }
 
 
@@ -786,13 +799,15 @@ void
 MultipleChannelsExperiment::SendRmPackets (Time time, uint32_t channelNumber)
 {
 	NetDeviceContainer::Iterator i;
+	bool flag=true;
 	for (i = devices.Begin (); i != devices.End (); ++i)
 	    {
 	      Ptr<WaveNetDevice> sender = DynamicCast<WaveNetDevice> (*i);
 	      double t = getCurrentTime()-time_start;
 	      Simulator::Schedule(Seconds(rng->GetValue (t, t+0.020)),
 	      				  	&MultipleChannelsExperiment::SendRm, this,
-							sender, CCH);
+							sender, CCH,flag);
+	  	flag=false;
 	    }
 }
 void
@@ -832,7 +847,7 @@ MultipleChannelsExperiment::SendAmPackets (Ptr<WaveNetDevice> sender, uint32_t c
 			Ptr<Packet> packet = Create<Packet> (rm_size);
 			StatsTag tag = StatsTag (++sequence, now,AmPacket,src->GetId());
 			packet->AddByteTag (tag);
-			Address dest = nodes_cluster[src->GetId()];
+			Address dest = nodes_cluster_address[src->GetId()];
 			bool result = false;
 			TxInfo info = TxInfo (channelNumber);
 			result = sender->SendX (packet, dest, Packet_Number, info);
@@ -840,6 +855,7 @@ MultipleChannelsExperiment::SendAmPackets (Ptr<WaveNetDevice> sender, uint32_t c
 		//else
 		//std::cout<<"channel_table[src->GetId()]= "<<channel_table[src->GetId()]<<std::endl;
 }
+
 void
 MultipleChannelsExperiment::SendSchPackets (bool flag)
 {
@@ -860,10 +876,28 @@ MultipleChannelsExperiment::SendSchPackets (bool flag)
 			std::cout<<"Cluster: "<<ite->first<<std::endl<<"The members: ";
 			isSuccefulCluster[ite->first]=true;//簇头也是成功分簇的点，在这加上
 			std::vector<uint32_t> *vector = ite->second;
+			vector->push_back(ite->first);
 			for(uint32_t i=0;i<vector->size();i++){
 				std::cout<<vector->at(i)<<" ";
 			}
 			std::cout<<std::endl;
+		}
+		for (ite = broadcastPackets.begin(); ite != broadcastPackets.end();++ite)
+		{
+			ite->second->clear();
+			ite->second->shrink_to_fit();
+		}
+
+		for(uint32_t i=0;i<Car_number;i++){
+			if(isSuccefulCluster[i]){
+				ite = CLUSTER.find(nodes_cluster[i]);
+				if(ite!=CLUSTER.end()){
+					std::vector<uint32_t> vec = *(ite->second);
+					ite = broadcastPackets.find(i);
+					if(ite!=broadcastPackets.end())
+						*(ite->second) = vec;
+				}
+			}
 		}
 		for(int i=0;i<Car_number;i++){
 			isCluster[i]=true;
@@ -882,8 +916,6 @@ MultipleChannelsExperiment::SendSchPackets (bool flag)
 		    	double risk=rng->GetValue (0.0, 10.0);
 		    	risk_factor[i] = risk;
 		 }
-
-
 	}
 	NetDeviceContainer::Iterator i;
 	for (i = devices.Begin (); i != devices.End (); ++i){
@@ -914,16 +946,14 @@ MultipleChannelsExperiment::SendSchPackets (bool flag)
 					packet->AddByteTag (tag);
 					Address dest = Mac48Address::GetBroadcast ();
 					bool result = false;
-					SchInfo schinfo=SchInfo(channel_table[src_id],false,0x00);
-					sender->StartSch(schinfo);
 					TxInfo info = TxInfo (channel_table[src_id]);
 					result = sender->SendX (packet, dest, Packet_Number, info);
-					sender->StopSch(channel_table[src_id]);
-					if(result)
+					if(result){
 						sends++;
+					}
 					else
-						std::cout<<"node "<<src_id<<"send faild in Sch"<<std::endl;
-				}
+						std::cout<<"node "<<src_id<<"send faild in Sch! time= "<<Now().GetMilliSeconds()<<" IsSchInterval "<<sender->GetChannelCoordinator()->IsSchInterval()
+						<<" IsGuardInterval "<<sender->GetChannelCoordinator()->IsGuardInterval()<<" IsCchInterval "<<sender->GetChannelCoordinator()->IsCchInterval()<<std::endl;		}
 			}
 		}
 	}
@@ -976,11 +1006,11 @@ MultipleChannelsExperiment::SendCdq(Ptr<WaveNetDevice> sender)
 		}
 	}
 }
-void MultipleChannelsExperiment::SendRm(Ptr<WaveNetDevice> sender,uint32_t channelNumber)
+void MultipleChannelsExperiment::SendRm(Ptr<WaveNetDevice> sender,uint32_t channelNumber,bool flag)
 {
-	if(CDQ1.size()!=0){
+	if(flag){
 		for(int i=0;i< Car_number;i++){
-			channel_table[i]=0;
+			channel_table[i]=172;
 		}
 		std::map<uint32_t, std::vector<struct Cdq>*>::iterator ite;
 		for (ite = CDQ1.begin(); ite != CDQ1.end();++ite)
@@ -990,8 +1020,7 @@ void MultipleChannelsExperiment::SendRm(Ptr<WaveNetDevice> sender,uint32_t chann
 			ite->second = 0;
 		}
 		CDQ1.clear();
-	}
-	if(CLUSTER.size()!=0){
+
 		std::map<uint32_t, std::vector<uint32_t>*>::iterator ite_cluster;
 		for (ite_cluster = CLUSTER.begin(); ite_cluster != CLUSTER.end();++ite_cluster)
 		{
@@ -1036,47 +1065,6 @@ MultipleChannelsExperiment::GetChannel()
 	if (channel_current > 5)
 		channel_current = channel_current % 6;
 	return Channel[channel];
-}
-
-
-// when simulation is stopped, we need to stats the queued packets
-// so the real transmitted packets will be (sends - queues).
-void
-MultipleChannelsExperiment::StatQueuedPackets ()
-{
-  NS_LOG_FUNCTION (this);
-  NetDeviceContainer::Iterator i;
-  for (i = devices.Begin (); i != devices.End (); ++i)
-    {
-	  Ptr<WaveNetDevice> device = DynamicCast<WaveNetDevice>(*i);
-	  Ptr<RegularWifiMac> rmac = DynamicCast<RegularWifiMac>(device->GetMac (178));
-
-	  PointerValue ptr;
-
-	  // for WAVE devices, the DcaTxop will not be used.
-	  // rmac->GetAttribute ("DcaTxop", ptr);
-	  // Ptr<DcaTxop> dcaTxop = ptr.Get<DcaTxop> ();
-
-	  rmac->GetAttribute ("VO_EdcaTxopN", ptr);
-	  Ptr<EdcaTxopN> vo_edcaTxopN = ptr.Get<EdcaTxopN> ();
-	  //Ptr<WaveEdcaTxopN> wave_vo = DynamicCast<WaveEdcaTxopN>(vo_edcaTxopN);
-	  //queues += GetQueuedSize (wave_vo);
-
-	  rmac->GetAttribute ("VI_EdcaTxopN", ptr);
-	  Ptr<EdcaTxopN> vi_edcaTxopN = ptr.Get<EdcaTxopN> ();
-	  //Ptr<WaveEdcaTxopN> wave_vi = DynamicCast<WaveEdcaTxopN>(vi_edcaTxopN);
-	  //queues += GetQueuedSize (wave_vi);
-
-	  rmac->GetAttribute ("BE_EdcaTxopN", ptr);
-	  Ptr<EdcaTxopN> be_edcaTxopN = ptr.Get<EdcaTxopN> ();
-	  //Ptr<WaveEdcaTxopN> wave_be = DynamicCast<WaveEdcaTxopN>(be_edcaTxopN);
-	  //queues += GetQueuedSize (wave_be);
-
-	  rmac->GetAttribute ("BK_EdcaTxopN", ptr);
-	  Ptr<EdcaTxopN> bk_edcaTxopN = ptr.Get<EdcaTxopN> ();
-	 // Ptr<WaveEdcaTxopN> wave_bk = DynamicCast<WaveEdcaTxopN>(bk_edcaTxopN);
-	  //queues += GetQueuedSize (wave_bk);
-  }
 }
 
 void
@@ -1125,10 +1113,12 @@ MultipleChannelsExperiment::InstallApplicationA (void)
 		  flag=0;
 		  rm_flag=0;
 		  cdq_flag=0;
+		  Simulator::Schedule (Seconds (now-0.002), &MultipleChannelsExperiment::StartSch,this);
+		  Simulator::Schedule (Seconds (now+0.05), &MultipleChannelsExperiment::StopSch,this);
 		  bool temp = true;
+		  double interval = coordinator_flag->GetSchInterval().GetSeconds()/Max_timeslot;
 		  for(uint32_t N_timeslot=0;N_timeslot < Max_timeslot;N_timeslot++){
-			  double time=getCurrentTime()-time_start;
-				  Simulator::Schedule(Seconds(rng->GetValue(time,time+0.045)),
+				  Simulator::Schedule(Seconds(rng->GetValue(now+interval*N_timeslot,now+interval*N_timeslot+(interval/3)*2)),
 				  		  			  				  	  &MultipleChannelsExperiment::SendSchPackets, this,
 				  										  temp);
 			 temp=false;
@@ -1159,9 +1149,9 @@ MultipleChannelsExperiment::Run (void)
     	SetupMobility ();
     	CreateWaveDevice ();
     	InstallApplicationA ();
-    	Simulator::Stop (Seconds (simulationTime));
-    	AnimationInterface anim ("wave-wns3.xml"); // Mandatory
-    	anim.SetMobilityPollInterval (Seconds (1));
+    	Simulator::Stop (Seconds (simulationTime+1));
+    	AnimationInterface anim ("wave-Culstering.xml"); // Mandatory
+    	//anim.SetMobilityPollInterval (Seconds (1));
     	Simulator::Run ();
     	Simulator::Destroy ();
     	Stats (17+r);
@@ -1179,16 +1169,10 @@ MultipleChannelsExperiment::InitStats (void)
   // used for sending packets randomly
   rng = CreateObject<UniformRandomVariable> ();
   rng->SetStream (1);
-
-  std::map<uint32_t, std::vector<uint32_t> *>::iterator i;
-  for (i = broadcastPackets.begin(); i != broadcastPackets.end();++i)
-  {
-	  i->second->clear();
-	  i->second->shrink_to_fit();
-	  delete i->second;
-	  i->second = 0;
+  for(uint32_t i=0;i<Car_number;i++){
+	  std::vector<uint32_t> *vec = new std::vector<uint32_t>;
+	  broadcastPackets.insert(std::make_pair(i,vec));
   }
-  broadcastPackets.clear();
 
   std::map<uint32_t, std::vector<struct Cdq>*>::iterator ite;
   			for (ite = CDQ.begin(); ite != CDQ.end();++ite)
@@ -1242,11 +1226,10 @@ MultipleChannelsExperiment::InitStats (void)
   sends = 0;
   sequence = 0;
   receives = 0;
-  queues = 0;
   delaySum = 0;
   receiveSum = 0;
 
-  Simulator::ScheduleDestroy (&MultipleChannelsExperiment::StatQueuedPackets, this);
+  //Simulator::ScheduleDestroy (&MultipleChannelsExperiment::StatQueuedPackets, this);
 }
 
 void
@@ -1301,18 +1284,16 @@ MultipleChannelsExperiment::Stats (uint32_t randomNumber)
   NS_LOG_DEBUG (" nodes = " << nodesNum);
   NS_LOG_DEBUG (" simulation time = " << simulationTime << "s");
   NS_LOG_DEBUG (" AverageClustering = " << (double)success_cluster/(double)(success_cluster+unsuccess_cluster)*100 << "%");
-  NS_LOG_DEBUG (" send packets = " << sequence);
+  NS_LOG_DEBUG (" send packets = " << sends);
   NS_LOG_DEBUG (" receives packets = " << receives);
-  NS_LOG_DEBUG (" queues packets = " << queues);
-  NS_LOG_DEBUG (" lost packets = " << (sequence - queues - receives));
+  NS_LOG_DEBUG (" receiveSum packets = " << receiveSum);
+  NS_LOG_DEBUG (" lost packets = " << (sends - receives));
   NS_LOG_DEBUG (" the sum delay of all received packets = " << delaySum << "micros");
-/*
-  if (broadcast)
-	NS_LOG_UNCOND (" the partly received broadcast packets = " << broadcastPackets.size ());
+
 
   // second show performance result
   // stats PDR (packet delivery ratio)
-  double PDR = receives / (double)(sequence - queues);
+  double PDR = receives / (double)(sends);
   // stats average delay
   double AverageDelay = delaySum / receiveSum / 1000.0;
   // stats system throughput, Mbps
@@ -1329,7 +1310,29 @@ MultipleChannelsExperiment::Stats (uint32_t randomNumber)
   delay+=AverageDelay;
   system_throughput+=Throughput;
   average_throughput+=AverageThroughput;
-  */
+
+}
+void
+MultipleChannelsExperiment::StartSch ()
+{
+	NetDeviceContainer::Iterator it;
+	for(it = devices.Begin ();it!=devices.End();it++){
+		Ptr<WaveNetDevice> sender = DynamicCast<WaveNetDevice> (*it);
+		const SchInfo schInfo = SchInfo (channel_table[sender->GetNode()->GetId()], false, EXTENDED_ALTERNATING);
+		sender->StartSch(schInfo);
+	}
+
+}
+void
+MultipleChannelsExperiment::StopSch ()
+{
+	NetDeviceContainer::Iterator it;
+	for(it = devices.Begin ();it!=devices.End();it++){
+		Ptr<WaveNetDevice> sender = DynamicCast<WaveNetDevice> (*it);
+		const SchInfo schInfo = SchInfo (channel_table[sender->GetNode()->GetId()], false, EXTENDED_ALTERNATING);
+		sender->StopSch(channel_table[sender->GetNode()->GetId()]);
+	}
+
 }
 
 int
