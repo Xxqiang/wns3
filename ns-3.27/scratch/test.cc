@@ -65,14 +65,18 @@
 
 using namespace ns3;
 
-Ptr<UniformRandomVariable> rng;
 
 int main(){
-	  rng = CreateObject<UniformRandomVariable> ();
-	  rng->SetStream (1);
-	  std::cout<<Seconds(rng->GetValue (2.22, 2.22+ 0.0010))<<std::endl;
-	std::cout<<Seconds(2.22)<<std::endl;
-	std::cout<<rng->GetValue (2.22, 2.22 + 1)<<std::endl;
+	 std::vector<int> vec;
+	 int i;
+	 i=1;
+	 vec.push_back(i);
+	 i=2;
+	 vec.push_back(i);
+	 std::cout<<"size= "<<vec.size()<<std::endl;
+	 for(int j=0; j<vec.size();j++){
+		std::cout<<vec.at(j)<<std::endl;
+	 }
 	return 0;
 }
 

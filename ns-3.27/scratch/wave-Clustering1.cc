@@ -354,7 +354,7 @@ CdqHeader::Deserialize (Buffer::Iterator start)
 // the transmission range of a device should be decided carefully,
 // since it will affect the packet delivery ratio
 // we suggest users use wave-transmission-range.cc to get this value
-#define Device_Transmission_Range 100
+#define Device_Transmission_Range 50
 #define Max_timeslot 10  //the max number time slot
 #define Car_number 20  //the mumber of cars
 
@@ -363,6 +363,7 @@ CdqHeader::Deserialize (Buffer::Iterator start)
 #define CdqPacket 1
 #define AmPacket 2
 #define SchPacket 3
+
 
 //the of sumilator start
 
@@ -401,7 +402,7 @@ private:
 
   void InstallApplicationA (void);
   void SendRmPackets(double time, uint32_t channelNumber);
-  void SendCdqPackets(uint32_t channelNumber);
+  void SendCdqPackets(double time);
   void SendAmPackets(Ptr<WaveNetDevice> sender, uint32_t channelNumber);
   void SendSchPackets();
   void SendSch(Time time);
@@ -485,7 +486,7 @@ private:
 MultipleChannelsExperiment::MultipleChannelsExperiment (void)
   : nodesNum (Car_number),           // 20 vehicles in 1km * 4-line
     freq (10),               // 10Hz, 100ms send one non-safety packet
-    simulationTime (10),     // make it run 100s
+    simulationTime (3),     // make it run 100s
     size (1500),             // packet size
 	rm_size(200),
 	//cdq_size(1500),
@@ -606,7 +607,6 @@ MultipleChannelsExperiment::RmPacketEvent(Ptr<NetDevice> dev, Ptr<const Packet> 
 	if (!result){
 		NS_FATAL_ERROR ("the packet here shall have a stats tag");
 	}
-		 // std::cout<<"packet :"<<tag.GetPacketId()<<" received in RM time="<<Now().GetMilliSeconds()<<std::endl;
 	NodeInfoHeader head;
 	pkt->PeekHeader(head);
 	Vector pos_d = head.getPosition();
@@ -660,7 +660,6 @@ MultipleChannelsExperiment::CdqPacketEvent(Ptr<NetDevice> dev, Ptr<const Packet>
 	pkt->PeekHeader(node_info_header);
 	CdqHeader header;
 	pkt->PeekHeader(header);
-
     	Ptr<Node> src = dev->GetNode();
     	uint32_t src_id =src->GetId();
     	Ptr<MobilityModel> model = src->GetObject<MobilityModel> ();
@@ -670,10 +669,8 @@ MultipleChannelsExperiment::CdqPacketEvent(Ptr<NetDevice> dev, Ptr<const Packet>
 	std::vector<struct Cdq> vec=header.getCdqVector();
 	for(uint32_t i=0;i<vec.size();i++){
 		Cdq cdq = vec.at(i);
-		if(cdq.send_id==src_id){
+		if(cdq.send_id==src_id)
 			flag=true;
-			break;
-		}
 	}
 	if(flag && (!isCluster[src_id])){
 		std::map<uint32_t, std::vector<struct Cdq>*>::iterator j;
@@ -709,7 +706,6 @@ MultipleChannelsExperiment::AmPacketEvent(Ptr<NetDevice> dev, Ptr<const Packet> 
 		NS_FATAL_ERROR ("the packet here shall have a stats tag");
 	}
 	  //std::cout<<"packet :"<<tag.GetPacketId()<<" received in AM time="<<Now().GetMilliSeconds()<<std::endl;
-
 	uint32_t src_id = dev->GetNode()->GetId();
 	std::map<uint32_t, std::vector<uint32_t>*>::iterator j;
 	j=CLUSTER.find(src_id);
@@ -735,19 +731,20 @@ MultipleChannelsExperiment::SchPacketEvent(Ptr<NetDevice> dev, Ptr<const Packet>
 	std::map<uint32_t, std::vector<uint32_t>*>::iterator i;
 	i=broadcastPackets.find(tag.getNodeId());
 	if(i!=broadcastPackets.end()){
-		bool flag = false;
 		std::vector<uint32_t>::iterator it;
 		for(it=i->second->begin();it!=i->second->end();)
 		{
-			if(*it==dev->GetNode()->GetId()){
+			if(*it==dev->GetNode()->GetId())
 				it=i->second->erase(it);
-				flag = true;
-				break;
-			}
 			else it++;
 		}
-		if(i->second->size()==1 && (i->second->at(0)==tag.getNodeId())&&flag)
+		if((i->second->size()==1 && (i->second->at(0)==tag.getNodeId()))){
+			std::cout<<"node "<<tag.getNodeId()<<" receive succeed!"<<std::endl;
 			receives++;
+		}
+		if(i->second->size()==0)
+			std::cout<<"node "<<tag.getNodeId()<<" receive succeed! and i->second->size()==0"<<std::endl;
+
 	}
 
 }
@@ -801,15 +798,14 @@ MultipleChannelsExperiment::SendRmPackets (double time, uint32_t channelNumber)
 	    }
 }
 void
-MultipleChannelsExperiment::SendCdqPackets (uint32_t channelNumber)
+MultipleChannelsExperiment::SendCdqPackets (double time)
 {
 
 	NetDeviceContainer::Iterator i;
 		for (i = devices.Begin (); i != devices.End (); ++i)
 		{
 			Ptr<WaveNetDevice> sender = DynamicCast<WaveNetDevice> (*i);
-			double t = getCurrentTime()-time_start;
-			Simulator::Schedule(Seconds(rng->GetValue (t, t + 0.010)),
+			Simulator::Schedule(Seconds(rng->GetValue (time, time + 0.010)),
 							&MultipleChannelsExperiment::SendCdq, this,
 							sender);
 		}
@@ -829,8 +825,6 @@ MultipleChannelsExperiment::SendAmPackets (Ptr<WaveNetDevice> sender, uint32_t c
 			TxInfo info = TxInfo (channelNumber);
 			result = sender->SendX (packet, dest, Packet_Number, info);
 	}
-		//else
-		//std::cout<<"channel_table[src->GetId()]= "<<channel_table[src->GetId()]<<std::endl;
 }
 
 void
@@ -843,6 +837,7 @@ MultipleChannelsExperiment::SendSchPackets ()
 		std::map<uint32_t, std::vector<struct Cdq>*>::iterator i;
 		i = CDQ1.find(src_id);
 		if(i!=CDQ1.end()){
+			//std::cout<<"node "<<src_id<<"Find in CDQ1"<<std::endl;
 			std::vector<Cdq> *vector = i->second;
 			uint32_t send_id=0;
 			double comand=0.0;
@@ -895,7 +890,6 @@ MultipleChannelsExperiment::SendCdq(Ptr<WaveNetDevice> sender)
 		j=CDQ.find(node_id);
 		if(j!=CDQ.end()){
 			std::vector<struct Cdq>* cdq_vector=j->second;
-			std::cout<<std::endl;
 			Ptr<Node> src = sender->GetNode();
 			Ptr<MobilityModel> model_src = src->GetObject<MobilityModel> ();
 			const Vector pos_src = model_src->GetPosition ();
@@ -914,8 +908,7 @@ MultipleChannelsExperiment::SendCdq(Ptr<WaveNetDevice> sender)
 				std::cout<<"CDQ send failed!"<<std::endl;
 			}
 		}else{
-			isCluster[node_id]=false;
-			std::cout<<"I'm note "<<node_id<<", i don't have neighbor!"<<std::endl;
+			std::cout<<"the node "<<node_id<<" is a isolated node,it doesn't has neighbor node!"<<std::endl;
 		}
 	}
 }
@@ -934,15 +927,10 @@ void MultipleChannelsExperiment::SendRm(Ptr<WaveNetDevice> sender,uint32_t chann
 		header.setRiskFactor(risk_factor[src->GetId()]);
 		header.setSpeed(model_src->GetVelocity().x);
 		packet->AddHeader(header);
-    //std::cout<<"node "<<tag.GetPacketId()<<" send time"<<Seconds(getCurrentTime()-time_start).GetMilliSeconds()<<std::endl;
 		bool result = false;
 		TxInfo info = TxInfo (channelNumber);
 		result = sender->SendX (packet, dest, Packet_Number, info);
-		if(result){
-			if(!(sender->GetChannelCoordinator()->IsRMInterval(now))){
-				//std::cout<<"packet: "<<tag.GetPacketId()<<" is not in RM! time="<<now.GetMilliSeconds()<<std::endl;
-			}
-		}else
+		if(!result)
 			std::cout<<"packet: "<<tag.GetPacketId()<<"send faild in RM!"<<std::endl;
 
 }
@@ -973,6 +961,7 @@ MultipleChannelsExperiment::InstallApplicationA (void)
 	  Time t = Seconds(now);
 	  if(coordinator_flag->IsCchInterval(t)&&flag==0){
 		  if(coordinator_flag->IsRMInterval(t)&&rm_flag==0){
+			 // std::cout<<t.GetMilliSeconds()<<" is in RM interval!"<<std::endl;
 			  rm_flag=1;
 			  Simulator::Schedule(t,&MultipleChannelsExperiment::RmInit, this);
 			  SendRmPackets(now,CCH);
@@ -980,7 +969,7 @@ MultipleChannelsExperiment::InstallApplicationA (void)
 		  if(coordinator_flag->IsCDQInterval(t)&&cdq_flag==0){
 			  cdq_flag = 1;
 			  //std::cout<<t.GetMilliSeconds()<<" is in CDQ interval!"<<std::endl;
-			 SendCdqPackets(CCH);
+			 SendCdqPackets(now);
 		  }
 		  if(coordinator_flag->IsAMInterval(t)){
 			  flag=1;
@@ -1001,14 +990,12 @@ MultipleChannelsExperiment::InstallApplicationA (void)
 		  rm_flag=0;
 		  cdq_flag=0;
 		  Simulator::Schedule(t,&MultipleChannelsExperiment::SchInit, this);
-		  Simulator::Schedule (Seconds (now-0.001), &MultipleChannelsExperiment::StartSch,this);
-		  Simulator::Schedule (Seconds (now+0.048), &MultipleChannelsExperiment::StopSch,this);
-		  bool temp = true;
+		  Simulator::Schedule (Seconds (now-0.002), &MultipleChannelsExperiment::StartSch,this);
+		  Simulator::Schedule (Seconds (now+0.049), &MultipleChannelsExperiment::StopSch,this);
 		  double interval = coordinator_flag->GetSchInterval().GetSeconds()/Max_timeslot;
 		  for(uint32_t N_timeslot=0;N_timeslot < Max_timeslot;N_timeslot++){
 				  Simulator::Schedule(Seconds(rng->GetValue(now+interval*N_timeslot,now+interval*N_timeslot+(interval/3)*2)),
 				  		  			  				  	  &MultipleChannelsExperiment::SendSchPackets, this);
-			 temp=false;
 		  }
 	  }
 
@@ -1043,16 +1030,19 @@ MultipleChannelsExperiment::Run (void)
     }
   }
 }
+
+
 void
-MultipleChannelsExperiment::RmInit(void)
+MultipleChannelsExperiment::RmInit (void)
 {
-			for(int i=0;i< Car_number;i++){
+	for(int i=0;i< Car_number;i++){
 				channel_table[i]=172;
 			}
 			std::map<uint32_t, std::vector<struct Cdq>*>::iterator ite;
 			for (ite = CDQ1.begin(); ite != CDQ1.end();++ite)
 			{
 				ite->second->clear();
+				ite->second->shrink_to_fit();
 				delete ite->second;
 				ite->second = 0;
 			}
@@ -1067,10 +1057,14 @@ MultipleChannelsExperiment::RmInit(void)
 			  	ite_cluster->second = 0;
 			}
 			CLUSTER.clear();
-}
+			for(int i=0;i<Car_number;i++){
+				double risk=rng->GetValue (0.0, 10.0);
+			    	risk_factor[i] = risk;
+			}
 
+}
 void
-MultipleChannelsExperiment::AmInit(void)
+MultipleChannelsExperiment::AmInit (void)
 {
 			for(uint32_t i=0;i<Car_number;i++){
 				if(isCluster[i]){
@@ -1083,68 +1077,65 @@ MultipleChannelsExperiment::AmInit(void)
 					}
 				}
 			}
+
 }
 
 void
-MultipleChannelsExperiment::SchInit(void)
+MultipleChannelsExperiment::SchInit (void)
 {
 	//std::cout<<Seconds(getCurrentTime()-time_start).GetMilliSeconds()<<" is in Sch interval!"<<std::endl<<std::endl<<std::endl;
-		std::map<uint32_t, std::vector<struct Cdq>*>::iterator i;
-		for (i = CDQ.begin(); i != CDQ.end();++i)
-		{
-			i->second->clear();
-			i->second->shrink_to_fit();
-			delete i->second;
-			i->second = 0;
-		}
-		CDQ.clear();
-		std::map<uint32_t, std::vector<uint32_t>*>::iterator ite;
-		for (ite = CLUSTER.begin(); ite != CLUSTER.end();++ite)
-		{
-			std::cout<<"Cluster: "<<ite->first<<std::endl<<"The members: ";
-			isSuccefulCluster[ite->first]=true;//簇头也是成功分簇的点，在这加上
-			ite->second->push_back(ite->first);
-			nodes_cluster[ite->first] = ite->first;
-			std::vector<uint32_t> *vector = ite->second;
-			for(uint32_t i=0;i<vector->size();i++){
-				std::cout<<vector->at(i)<<" ";
+			std::map<uint32_t, std::vector<struct Cdq>*>::iterator i;
+			for (i = CDQ.begin(); i != CDQ.end();++i)
+			{
+				i->second->clear();
+				i->second->shrink_to_fit();
+				delete i->second;
+				i->second = 0;
 			}
-			std::cout<<std::endl;
-		}
-		for (ite = broadcastPackets.begin(); ite != broadcastPackets.end();++ite)
-		{
-			ite->second->clear();
-			ite->second->shrink_to_fit();
-		}
+			CDQ.clear();
+			std::map<uint32_t, std::vector<uint32_t>*>::iterator ite;
+			for (ite = CLUSTER.begin(); ite != CLUSTER.end();++ite)
+			{
+				std::cout<<"Cluster: "<<ite->first<<std::endl<<"The members: ";
+				isSuccefulCluster[ite->first]=true;//簇头也是成功分簇的点，在这加上
+				ite->second->push_back(ite->first);
+				nodes_cluster[ite->first] = ite->first;
+				std::vector<uint32_t> *vector = ite->second;
+				for(uint32_t i=0;i<vector->size();i++){
+					std::cout<<vector->at(i)<<" ";
+				}
+				std::cout<<std::endl;
+			}
+			for (ite = broadcastPackets.begin(); ite != broadcastPackets.end();++ite)
+			{
+				ite->second->clear();
+				ite->second->shrink_to_fit();
+			}
 
-		for(uint32_t i=0;i<Car_number;i++){
-			if(isSuccefulCluster[i]){
-				ite = CLUSTER.find(nodes_cluster[i]);
-				if(ite!=CLUSTER.end()){
-					std::vector<uint32_t> vec = *(ite->second);
-					ite = broadcastPackets.find(i);
-					if(ite!=broadcastPackets.end())
-						*(ite->second) = vec;
+			for(uint32_t i=0;i<Car_number;i++){
+				if(isSuccefulCluster[i]){
+					ite = CLUSTER.find(nodes_cluster[i]);
+					if(ite!=CLUSTER.end()){
+						std::vector<uint32_t> vec = *(ite->second);
+						ite = broadcastPackets.find(i);
+						if(ite!=broadcastPackets.end())
+							*(ite->second) = vec;
+					}
 				}
 			}
-		}
-		for(int i=0;i<Car_number;i++){
-			isCluster[i]=true;
-		}
-		for(int i=0;i<Car_number;i++){
-			if(isSuccefulCluster[i])
-				success_cluster++;
-			else
-				unsuccess_cluster++;
-			isSuccefulCluster[i]=false;
-		}
-		for(int i=0;i<Car_number;i++){
-			distant_from_cluster[i]=0.0;
-		}
-		for(int i=0;i<Car_number;i++){
-		    	double risk=rng->GetValue (0.0, 10.0);
-		    	risk_factor[i] = risk;
-		 }
+			for(int i=0;i<Car_number;i++){
+				isCluster[i]=true;
+			}
+			for(int i=0;i<Car_number;i++){
+				if(isSuccefulCluster[i])
+					success_cluster++;
+				else
+					unsuccess_cluster++;
+				isSuccefulCluster[i]=false;
+			}
+			for(int i=0;i<Car_number;i++){
+				distant_from_cluster[i]=0.0;
+			}
 }
 
 void
@@ -1196,9 +1187,6 @@ MultipleChannelsExperiment::InitStats (void)
     for(int i=0;i<Car_number;i++){
     		distant_from_cluster[i]=true;
    	}
-    for(int i=0;i<Car_number;i++){
-    		risk_factor[i]=true;
-    }
     for(int i=0;i<Car_number;i++){
     		double risk=rng->GetValue (0.0, 10.0);
     	    	risk_factor[i] = risk;
@@ -1316,6 +1304,7 @@ MultipleChannelsExperiment::StopSch ()
 		const SchInfo schInfo = SchInfo (channel_table[sender->GetNode()->GetId()], false, EXTENDED_ALTERNATING);
 		sender->StopSch(channel_table[sender->GetNode()->GetId()]);
 	}
+
 }
 
 int
